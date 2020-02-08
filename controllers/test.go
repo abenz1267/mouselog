@@ -5,47 +5,28 @@ import (
 	"fmt"
 
 	"github.com/astaxie/beego"
-
 	"github.com/microsoft/mouselog/detect"
 	"github.com/microsoft/mouselog/trace"
 )
 
-type ApiController struct {
+type APIController struct {
 	beego.Controller
 }
 
-var sessions map[string]*trace.Session
-
-func init() {
-	sessions = map[string]*trace.Session{}
+type response struct {
+	Status string      `json:"status"`
+	Msg    string      `json:"msg"`
+	Data   interface{} `json:"data"`
 }
 
-// Session either returns an already existing session or creates and returns a new one.
-// If a new session has been created, the returned boolean will be true.
-func Session(sessionId string) (*trace.Session, bool) {
-	if val, ok := sessions[sessionId]; ok {
-		return val, false
-	}
+func (c *APIController) UploadTrace() {
+	var resp response
 
-	sessions[sessionId] = trace.NewSession(sessionId)
-	return sessions[sessionId], true
-}
-
-func (c *ApiController) GetSessionId() {
-	sessionId := getSessionId(c)
-
-	trace.AddSession(sessionId, c.Input().Get("websiteId"), getUserAgent(c.Ctx), getClientIp(c.Ctx))
-
-	c.Data["json"] = sessionId
-	c.ServeJSON()
-}
-
-func (c *ApiController) UploadTrace() {
-	websiteId := c.Input().Get("websiteId")
-	sessionId := getSessionId(c)
-	impressionId := c.Input().Get("impressionId")
-	userAgent := getUserAgent(c.Ctx)
-	clientIp := getClientIp(c.Ctx)
+	websiteID := c.Input().Get("websiteId")
+	sessionID := c.StartSession().SessionID()
+	impressionID := c.Input().Get("impressionId")
+	userAgent := c.Ctx.Input.UserAgent()
+	clientID := c.Ctx.Input.IP()
 
 	var data []byte
 	if c.Ctx.Request.Method == "GET" {
@@ -60,21 +41,28 @@ func (c *ApiController) UploadTrace() {
 		panic(err)
 	}
 
-	trace.AddSession(sessionId, websiteId, userAgent, clientIp)
-	trace.AddImpression(impressionId, sessionId, t.Path)
-	trace.AppendTraceToImpression(impressionId, &t)
+	trace.AddSession(sessionID, websiteID, userAgent, clientID)
+	trace.AddImpression(impressionID, sessionID, t.Path)
+	trace.AppendTraceToImpression(impressionID, &t)
 
-	if websiteId != "mouselog" {
-		c.Data["json"] = "OK"
+	// Only return traces for test page for visualization (websiteId == "mouselog")
+	if websiteID != "mouselog" {
+		resp = response{Status: "ok", Msg: "", Data: ""}
+		if len(t.Events) == 0 {
+			resp.Msg = "config"
+			resp.Data = trace.ParseTrackConfig(trace.GetWebsite(websiteID).TrackConfig)
+		}
+
+		c.Data["json"] = resp
 		c.ServeJSON()
 		return
 	}
 
-	ss, _ := Session(sessionId)
+	ss, _ := Session(sessionID)
 	if len(t.Events) > 0 {
-		fmt.Printf("Read event [%s]: (%s, %f, %d, %d)\n", sessionId, t.Id, t.Events[0].Timestamp, t.Events[0].X, t.Events[0].Y)
+		fmt.Printf("Read event [%s]: (%s, %f, %d, %d)\n", sessionID, t.Id, t.Events[0].Timestamp, t.Events[0].X, t.Events[0].Y)
 	} else {
-		fmt.Printf("Read event [%s]: (%s, <empty>)\n", sessionId, t.Id)
+		fmt.Printf("Read event [%s]: (%s, <empty>)\n", sessionID, t.Id)
 	}
 
 	if len(t.Events) != 0 {
@@ -85,8 +73,8 @@ func (c *ApiController) UploadTrace() {
 	c.ServeJSON()
 }
 
-func (c *ApiController) ClearTrace() {
-	sessionId := getSessionId(c)
+func (c *APIController) ClearTrace() {
+	sessionID := c.StartSession().SessionID()
 	data := c.Ctx.Input.RequestBody
 
 	var t trace.Trace
@@ -95,7 +83,7 @@ func (c *ApiController) ClearTrace() {
 		panic(err)
 	}
 
-	ss, _ := Session(sessionId)
+	ss, _ := Session(sessionID)
 	if t2, ok := ss.TraceMap[t.Id]; ok {
 		delete(ss.TraceMap, t.Id)
 		for i, t3 := range ss.Traces {
@@ -105,7 +93,7 @@ func (c *ApiController) ClearTrace() {
 		}
 	}
 
-	fmt.Printf("Clear event [%s]: (%s, <empty>)\n", sessionId, t.Id)
+	fmt.Printf("Clear event [%s]: (%s, <empty>)\n", sessionID, t.Id)
 
 	c.Data["json"] = detect.GetDetectResult(ss, t.Id)
 	c.ServeJSON()
